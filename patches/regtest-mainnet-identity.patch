@@ -1,0 +1,143 @@
+Give regtest mainnet's identity: genesis, address prefixes, p2p magic, difficulty.
+
+WHY
+
+The real eigenwallet ASB refuses to build a wallet against our local chain:
+
+    Failed to create new wallet: cannot find agreement block with server
+
+That message is electrum-pool's checkpoint reconciliation. It walks its local
+chain back looking for a block the server also has, and a freshly created
+wallet's only checkpoint is the genesis block of its configured network. A
+mainnet-configured ASB looks for 000000000019d668..., a stock regtest chain
+answers with 0f9188f13cb7b2c7..., and there is no agreement at any height. It
+is not an explicit network check, but it is a genesis check in effect. Chain
+length is not the cause: the error is byte-identical on 101- and 500-block
+chains.
+
+We cannot instead tell the ASB it is on regtest — the shipped binary's env
+selector only ever reaches Mainnet or Testnet, and validate_config rejects the
+mismatch outright ("Expected bitcoin network in config file to be Bitcoin but
+was Regtest"). Mainnet is the configuration we WANT under test anyway: it
+carries the 10-minute lock-mempool timeout and cancel=24/punish=144 that our
+driver hardcodes, where the Regtest env would substitute 30s/100/50.
+
+THE FOUR HUNKS
+
+  genesis      So electrum-pool finds its agreement block. This is the one that
+               is load-bearing; the others are consequences.
+
+  prefixes     bech32_hrp "bcrt" -> "bc" (and base58 to mainnet), so every tool
+               in the rig speaks the same addresses as the peers and nothing
+               has to translate.
+
+  p2p magic    electrs derives BOTH its starting genesis and its p2p magic from
+               its --network flag, and only signet's magic is configurable. With
+               mainnet genesis on the chain, electrs must run as --network
+               bitcoin, which means bitcoind has to speak mainnet magic too.
+               Without this hunk electrs dies with
+               "missing prev_blockhash: 000000000019d668...".
+
+MINING, AND WHY THE FOURTH HUNK IS NEEDED
+
+Mainnet's genesis carries difficulty-1 proof of work, and nBits is inherited:
+GetNextWorkRequired returns pindexLast->nBits between retargets.
+
+fPowAllowMinDifficultyBlocks rescues only the FIRST block. Block 1's timestamp
+is ~2026 against genesis's 2009, far more than nPowTargetSpacing*2, so the
+min-difficulty rule returns nProofOfWorkLimit. But block 2 is mined
+milliseconds after block 1, fails that same test, and takes the else branch,
+which walks back past block 1 (whose nBits IS the easy limit) to genesis and
+returns 0x1d00ffff. Every block after the first then costs ~2^32 hashes.
+
+This fails almost silently: generatetoaddress exhausts its default maxtries and
+returns FEWER blocks than asked without erroring, so a caller that does not
+check the height sees success and a 1-block chain.
+
+Hence the pow.cpp hunk: return the proof-of-work limit outright when
+fPowNoRetargeting is set. Only regtest sets it, so no other chain is affected.
+
+The merkle root assert is left alone deliberately: every network shares the same
+genesis coinbase transaction, so mainnet's merkle root already equals regtest's.
+
+DANGER
+
+A node with mainnet's genesis AND mainnet's magic is wire-compatible with the
+real Bitcoin network. Left to its own devices it would happily dial real peers
+and start syncing the real chain onto what is supposed to be a private one.
+Anything running this build MUST disable outbound networking:
+
+    -connect=0 -dnsseed=0 -bind=127.0.0.1:<port>
+
+The flake's `checks.mining` does exactly that. Do not use this build for
+anything that is allowed to reach the internet.
+
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -596,10 +596,10 @@
+         consensus.nMinimumChainWork = uint256{};
+         consensus.defaultAssumeValid = uint256{};
+ 
+-        pchMessageStart[0] = 0xfa;
+-        pchMessageStart[1] = 0xbf;
+-        pchMessageStart[2] = 0xb5;
+-        pchMessageStart[3] = 0xda;
++        pchMessageStart[0] = 0xf9;
++        pchMessageStart[1] = 0xbe;
++        pchMessageStart[2] = 0xb4;
++        pchMessageStart[3] = 0xd9;
+         nDefaultPort = 18444;
+         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
+         m_assumed_blockchain_size = 0;
+@@ -631,9 +631,9 @@
+             consensus.vDeployments[deployment_pos].min_activation_height = version_bits_params.min_activation_height;
+         }
+ 
+-        genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 50 * COIN);
++        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
+         consensus.hashGenesisBlock = genesis.GetHash();
+-        assert(consensus.hashGenesisBlock == uint256{"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"});
++        assert(consensus.hashGenesisBlock == uint256{"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"});
+         assert(genesis.hashMerkleRoot == uint256{"4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"});
+ 
+         vFixedSeeds.clear(); //!< Regtest mode doesn't have any fixed seeds.
+@@ -672,13 +672,13 @@
+             .dTxRate = 0.001, // Set a non-zero rate to make it testable
+         };
+ 
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
+-        base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
+-        base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,5);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,128);
++        base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x88, 0xB2, 0x1E};
++        base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
+ 
+-        bech32_hrp = "bcrt";
++        bech32_hrp = "bc";
+ 
+         // Copied from Testnet4.
+         m_headers_sync_params = HeadersSyncParams{
+--- a/src/pow.cpp
++++ b/src/pow.cpp
+@@ -16,6 +16,17 @@
+     assert(pindexLast != nullptr);
+     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+ 
++    // Harness build: regtest carries mainnet's genesis (see chainparams.cpp),
++    // whose difficulty-1 nBits would otherwise propagate. Block 1 escapes via
++    // the min-difficulty rule below — its timestamp is ~17 years after
++    // genesis's 2009 — but block 2 is mined milliseconds later, takes the else
++    // branch, walks back past block 1 to genesis and inherits 0x1d00ffff. That
++    // makes every block after the first cost ~2^32 hashes, and
++    // generatetoaddress silently returns short after exhausting maxtries.
++    //
++    // Only regtest sets fPowNoRetargeting, so this cannot affect another chain.
++    if (params.fPowNoRetargeting) return nProofOfWorkLimit;
++
+     // Only change once per difficulty adjustment interval
+     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
+     {

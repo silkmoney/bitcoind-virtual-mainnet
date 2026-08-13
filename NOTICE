@@ -1,0 +1,12 @@
+bitcoind-virtual-mainnet
+Copyright (c) 2026 Andrzej Broński
+
+This project ports no third-party source of its own. It distributes a patch
+against Bitcoin Core (MIT), applied at build time to the `bitcoind` package from
+nixpkgs; Bitcoin Core is neither vendored nor redistributed here. The patch
+modifies src/kernel/chainparams.cpp and src/pow.cpp so that the regtest network
+carries mainnet's genesis hash, address prefixes and p2p magic.
+
+The resulting binary is a TEST HARNESS. Because it answers with mainnet's
+genesis and speaks mainnet's p2p magic, it is wire-compatible with the real
+Bitcoin network and must never be allowed to reach it. See the README.

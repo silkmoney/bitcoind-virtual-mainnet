@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  # Seconds, and the failure everyone actually hits. Kept separate from the
+  # build so a misformatted flake does not wait behind a Bitcoin Core compile.
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#checks.x86_64-linux.formatting --print-build-logs
+
+  # The real gate: builds bitcoind with the patch applied, starts it, and
+  # asserts genesis, address format and mined height. Compiling Bitcoin Core
+  # from source takes tens of minutes on a GitHub runner — that is the cost of
+  # a patch-based package, and there is nothing to cache across runs because
+  # the derivation is unique to this repo.
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check --print-build-logs
