@@ -147,11 +147,16 @@ The patch edits `src/kernel/chainparams.cpp` and `src/pow.cpp` as source, so it
 rots whenever upstream touches those files — and `chainparams.cpp` is touched
 fairly often.
 
-It was written against **Bitcoin Core 31.0** and is tested against whatever
-version the pinned `nixpkgs` provides. If your `nixpkgs` moves ahead and the
-patch stops applying, that is expected maintenance rather than a surprise:
-the hunks are small and the constants are stable, so rebasing is usually
-mechanical. Pin `nixpkgs` if you need this not to move under you.
+It was written against **Bitcoin Core 31.0**, and has been built and checked
+against **31.0 and 31.1** — 31.1 from this flake's own `nixpkgs` pin, and 31.0
+from a consumer that overrides `nixpkgs` with its own (which is the normal way
+to use this: you want the patch on the same Core the rest of your build uses).
+
+Two minor versions is not a compatibility guarantee, but it does mean the hunks
+are not knife-edge against one particular release. If your `nixpkgs` moves ahead
+and the patch stops applying, that is expected maintenance rather than a
+surprise: the hunks are small and the constants are stable, so rebasing is
+usually mechanical. Pin `nixpkgs` if you need this not to move under you.
 
 This project does **not** track Bitcoin Core releases automatically. Issues and
 PRs for newer versions are welcome.
