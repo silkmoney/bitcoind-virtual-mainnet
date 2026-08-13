@@ -176,9 +176,54 @@
               echo "  Running the result — ALWAYS disable outbound networking:"
               echo "    bitcoind -regtest -connect=0 -dnsseed=0 -listen=0"
               echo
-              if [ -d .git ]; then
-                ln -sf ${preCommitHook} .git/hooks/pre-commit
-                ln -sf ${prePushHook} .git/hooks/pre-push
+              # Hooks as REAL FILES that fail loudly, not symlinks into the
+              # store.
+              #
+              # `ln -sf` into /nix/store is how this silently stops working:
+              # `nix store gc` collects the script, the symlink dangles, and git
+              # skips a hook it cannot execute WITHOUT SAYING SO. The gate does
+              # not fail — it evaporates, and nobody learns that it did until
+              # something unformatted or untested reaches a branch.
+              #
+              # So: a generated wrapper that exits 1 with an explanation when its
+              # target is gone, plus an indirect GC root so collection stops
+              # happening in the first place.
+              hooks="$(${pkgs.git}/bin/git rev-parse --git-path hooks 2>/dev/null || true)"
+              if [ -n "$hooks" ] && [ -d "$hooks" ]; then
+                install_hook() {
+                  name="$1"
+                  target="$2"
+                  dest="$hooks/$name"
+                  # Never over a contributor's own hook. Ours carry the marker
+                  # below; a plain symlink is one we placed before this change.
+                  if [ -e "$dest" ] && [ ! -L "$dest" ] &&
+                     ! grep -q devshell-managed-hook "$dest" 2>/dev/null; then
+                    echo "note: $dest exists and is not ours — leaving it alone" >&2
+                    return
+                  fi
+                  ${pkgs.nix}/bin/nix-store --realise "$target" \
+                    --add-root "$hooks/.$name-gcroot" --indirect >/dev/null 2>&1 || true
+                  # Delete first: a redirect FOLLOWS an existing symlink, so
+                  # writing over one that points into the read-only store fails
+                  # with "Permission denied" and leaves the dangling link in
+                  # place — the repair failing on exactly the repos needing it.
+                  rm -f "$dest"
+                  {
+                    echo "#!/bin/sh"
+                    echo "# devshell-managed-hook — regenerate with 'nix develop'."
+                    echo "target='$target'"
+                    echo 'if [ ! -x "$target" ]; then'
+                    printf "  echo '%s gate unavailable: its nix store path was collected.' >&2\n" "$name"
+                    echo "  echo '  Run: nix develop   (this refuses rather than skipping — git skips an unexecutable hook silently)' >&2"
+                    echo '  exit 1'
+                    echo 'fi'
+                    echo 'exec "$target" "$@"'
+                  } > "$dest"
+                  chmod +x "$dest"
+                }
+                install_hook pre-commit ${preCommitHook}
+                install_hook pre-push ${prePushHook}
+                unset -f install_hook
               fi
             '';
           };
